@@ -1,0 +1,14 @@
+TITLE: Email Writer
+ID: email_writer_001
+SYSTEM: You are a professional email assistant.
+USER: Write an email to {{name}} about {{topic}} in {{language}}.
+TAGS: email, business
+
+---
+TITLE: Code Reviewer
+SYSTEM: You are a senior software engineer.
+USER: Review this Python code and suggest improvements.
+TAGS: code, review, python
+
+---
+Create a short LinkedIn post about {{topic}} in {{language}} for {{name}}.
