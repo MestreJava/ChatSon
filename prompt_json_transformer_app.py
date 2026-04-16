@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import traceback
 from dataclasses import dataclass, field
@@ -22,6 +21,8 @@ except Exception:
 
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".prompt", ".prompts"}
+INLINE_SOURCE_KEY = "__typed_input__"
+INLINE_SOURCE_PATH = "Typed in app"
 FIELD_ALIASES = {
     "title": "title",
     "name": "title",
@@ -301,8 +302,11 @@ class PromptTransformerApp:
         self.root.title("Prompt Text → JSON Transformer")
         self.root.geometry("1500x900")
         self.files: list[str] = []
+        self.source_keys: list[str] = []
         self.prompts_by_file: dict[str, list[PromptRecord]] = {}
         self.current_preview_file: str | None = None
+        self.inline_source_text = ""
+        self.inline_source_enabled = False
 
         self.export_mode_var = tk.StringVar(value="Dynamic template")
         self.model_var = tk.StringVar(value="gpt-5")
@@ -317,6 +321,8 @@ class PromptTransformerApp:
 
         ttk.Button(top, text="Add Files", command=self.add_files).pack(side="left", padx=4)
         ttk.Button(top, text="Add Folder", command=self.add_folder).pack(side="left", padx=4)
+        ttk.Button(top, text="Write In App", command=self.activate_inline_input).pack(side="left", padx=4)
+        ttk.Button(top, text="Convert Typed Text", command=self.convert_inline_text).pack(side="left", padx=4)
         ttk.Button(top, text="Scan & Convert", command=self.refresh_all).pack(side="left", padx=4)
         ttk.Button(top, text="Export JSON", command=self.export_json).pack(side="left", padx=4)
         ttk.Button(top, text="Clear", command=self.clear_all).pack(side="left", padx=4)
@@ -344,7 +350,8 @@ class PromptTransformerApp:
             self.root,
             text=(
                 "Supported fields: TITLE, ID, SYSTEM, USER, ASSISTANT, DESCRIPTION, TAGS, CATEGORY, PROMPT. "
-                "Separate prompts with --- . Optional drag-and-drop works with tkinterdnd2."
+                "Separate prompts with --- . Use Write In App to type directly in the program, then click "
+                "Convert Typed Text. Optional drag-and-drop works with tkinterdnd2."
             ),
             padding=(10, 0, 10, 8),
         )
@@ -365,7 +372,7 @@ class PromptTransformerApp:
         self.files_list.pack(fill="both", expand=True)
         self.files_list.bind("<<ListboxSelect>>", self.on_file_select)
 
-        ttk.Label(middle, text="Source text preview").pack(anchor="w")
+        ttk.Label(middle, text="Source text preview / typed input").pack(anchor="w")
         self.source_text = ScrolledText(middle, wrap="word")
         self.source_text.pack(fill="both", expand=True)
 
@@ -455,16 +462,92 @@ class PromptTransformerApp:
         self.files = merged
         self.refresh_all()
 
+    def source_label(self, key: str) -> str:
+        if key == INLINE_SOURCE_KEY:
+            count = len(self.prompts_by_file.get(INLINE_SOURCE_KEY, []))
+            return f"{INLINE_SOURCE_PATH}  ({count} prompt blocks)"
+        return f"{Path(key).name}  ({len(self.prompts_by_file.get(key, []))} prompt blocks)"
+
+    def set_source_text_content(self, content: str, editable: bool) -> None:
+        self.source_text.config(state="normal")
+        self.source_text.delete("1.0", "end")
+        self.source_text.insert("1.0", content)
+        self.source_text.config(state="normal" if editable else "disabled")
+
+    def sync_inline_source_from_editor(self) -> None:
+        if self.current_preview_file == INLINE_SOURCE_KEY:
+            self.inline_source_text = self.source_text.get("1.0", "end").strip()
+
+    def parse_inline_source(self) -> None:
+        if not self.inline_source_enabled:
+            self.prompts_by_file.pop(INLINE_SOURCE_KEY, None)
+            return
+        if not self.inline_source_text.strip():
+            self.prompts_by_file[INLINE_SOURCE_KEY] = []
+            return
+        self.prompts_by_file[INLINE_SOURCE_KEY] = parse_text_to_prompts(self.inline_source_text, INLINE_SOURCE_PATH)
+
+    def rebuild_sources_list(self, preferred_key: str | None = None) -> None:
+        self.source_keys = list(self.files)
+        if self.inline_source_enabled:
+            self.source_keys.append(INLINE_SOURCE_KEY)
+
+        self.files_list.delete(0, "end")
+        for key in self.source_keys:
+            self.files_list.insert("end", self.source_label(key))
+
+        if not self.source_keys:
+            return
+
+        if preferred_key in self.source_keys:
+            index = self.source_keys.index(preferred_key)
+        elif self.current_preview_file in self.source_keys:
+            index = self.source_keys.index(self.current_preview_file)
+        else:
+            index = 0
+
+        self.files_list.selection_clear(0, "end")
+        self.files_list.selection_set(index)
+        self.files_list.event_generate("<<ListboxSelect>>")
+
+    def activate_inline_input(self) -> None:
+        self.inline_source_enabled = True
+        if not self.inline_source_text.strip():
+            self.inline_source_text = (
+                "TITLE: Prompt Title\n"
+                "ID: prompt_001\n"
+                "SYSTEM: You are a helpful assistant.\n"
+                "USER: Write about {{topic}}.\n"
+                "TAGS: example\n"
+            )
+        self.parse_inline_source()
+        self.current_preview_file = INLINE_SOURCE_KEY
+        self.rebuild_sources_list(preferred_key=INLINE_SOURCE_KEY)
+
+    def convert_inline_text(self) -> None:
+        if self.current_preview_file != INLINE_SOURCE_KEY and not self.inline_source_enabled:
+            self.activate_inline_input()
+        self.inline_source_enabled = True
+        self.sync_inline_source_from_editor()
+        self.parse_inline_source()
+        self.current_preview_file = INLINE_SOURCE_KEY
+        self.rebuild_sources_list(preferred_key=INLINE_SOURCE_KEY)
+        self.update_preview()
+
     def clear_all(self) -> None:
         self.files = []
+        self.source_keys = []
         self.prompts_by_file = {}
         self.current_preview_file = None
+        self.inline_source_text = ""
+        self.inline_source_enabled = False
         self.files_list.delete(0, "end")
-        self.source_text.delete("1.0", "end")
+        self.set_source_text_content("", editable=True)
         self.json_text.delete("1.0", "end")
         self.validation_text.delete("1.0", "end")
 
     def refresh_all(self) -> None:
+        self.sync_inline_source_from_editor()
         self.prompts_by_file.clear()
         errors: list[str] = []
         for path in self.files:
@@ -474,17 +557,13 @@ class PromptTransformerApp:
             except Exception as exc:
                 errors.append(f"[ERROR] {path}: {exc}")
 
-        self.files_list.delete(0, "end")
-        for path in self.files:
-            count = len(self.prompts_by_file.get(path, []))
-            self.files_list.insert("end", f"{Path(path).name}  ({count} prompt blocks)")
+        self.parse_inline_source()
 
-        if self.files:
-            self.files_list.selection_clear(0, "end")
-            self.files_list.selection_set(0)
-            self.files_list.event_generate("<<ListboxSelect>>")
+        if self.files or self.inline_source_enabled:
+            preferred_key = self.current_preview_file if self.current_preview_file in self.source_keys else None
+            self.rebuild_sources_list(preferred_key=preferred_key)
         else:
-            self.source_text.delete("1.0", "end")
+            self.set_source_text_content("", editable=True)
             self.json_text.delete("1.0", "end")
 
         validation_lines = []
@@ -499,16 +578,20 @@ class PromptTransformerApp:
         if not selection:
             return
         index = selection[0]
-        if index >= len(self.files):
+        if index >= len(self.source_keys):
             return
-        path = self.files[index]
-        self.current_preview_file = path
+        key = self.source_keys[index]
+        self.current_preview_file = key
+        if key == INLINE_SOURCE_KEY:
+            source = self.inline_source_text
+            self.set_source_text_content(source, editable=True)
+            self.update_preview()
+            return
         try:
-            source = load_text_file(path)
+            source = load_text_file(key)
         except Exception as exc:
             source = f"Unable to read file: {exc}"
-        self.source_text.delete("1.0", "end")
-        self.source_text.insert("1.0", source)
+        self.set_source_text_content(source, editable=False)
         self.update_preview()
 
     def all_prompts(self) -> list[PromptRecord]:
@@ -537,6 +620,9 @@ class PromptTransformerApp:
         return lines
 
     def update_preview(self) -> None:
+        if self.current_preview_file == INLINE_SOURCE_KEY:
+            self.sync_inline_source_from_editor()
+            self.parse_inline_source()
         prompts = self.preview_prompts()
         try:
             variables = self.parse_variables_json()
@@ -559,8 +645,10 @@ class PromptTransformerApp:
         self.validation_text.insert("1.0", "\n".join(self.build_validation_lines()))
 
     def export_json(self) -> None:
-        if not self.prompts_by_file:
-            messagebox.showwarning("Nothing to export", "Add files or a folder first.")
+        self.sync_inline_source_from_editor()
+        self.parse_inline_source()
+        if not self.all_prompts():
+            messagebox.showwarning("Nothing to export", "Add files, a folder, or typed input first.")
             return
 
         try:

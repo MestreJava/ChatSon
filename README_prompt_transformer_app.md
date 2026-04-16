@@ -3,6 +3,7 @@
 A Python desktop app to convert prompt text files into JSON with:
 
 - GUI desktop interface
+- direct typing/pasting inside the app
 - automatic validation of missing fields
 - variable detection like `{{name}}`, `{{topic}}`, `{{language}}`
 - drag-and-drop file/folder conversion
@@ -73,6 +74,18 @@ If you do not install it, the app still works using **Add Files** and **Add Fold
 ```powershell
 python .\prompt_json_transformer_app.py
 ```
+
+## Type Prompt Text In The App
+
+You can now create prompt text directly inside the program without saving a `.txt` file first.
+
+1. Click **Write In App**
+2. Type or paste one or more prompt blocks into the **Source text preview / typed input** panel
+3. Click **Convert Typed Text**
+4. Review the JSON preview and validation results
+5. Click **Export JSON** to save the generated output
+
+The typed content behaves like another source in the left panel, alongside imported files and folders.
 
 ## How the export modes work
 
