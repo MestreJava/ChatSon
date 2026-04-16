@@ -1,0 +1,29 @@
+Inputed prompt in app:
+"we should never again call steams original API.
+This should have been changed already.
+Plan for this change on inventory calls,
+have only SteamWebAPI be used in the entire platform,
+theres no more need for the other APIs (CSFloat and Steam's original API) except for login,
+auth etc. But regarding inventory and Item information, its only SteamWebAPI".
+
+Output Gerenetared by app:
+"{
+  "prompts": [
+    {
+      "id": "prompt_001",
+      "title": "Prompt 1",
+      "source_path": "Typed in app",
+      "block_index": 1,
+      "tags": [],
+      "template": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "we should never again call steams original API. This should have been changed already. Plan for this change on inventory calls, have only SteamWebAPI be used in the entire platform, theres no more need for the other APIs (CSFloat and Steam's original API) except for login, auth etc. But regarding inventory and Item information, its only SteamWebAPI"
+          }
+        ]
+      },
+      "variables": []
+    }
+  ]
+}"

@@ -11,6 +11,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
+from prompt_structuring_ai import structure_plain_prompt
+
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
     DND_AVAILABLE = True
@@ -23,6 +25,52 @@ except Exception:
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".prompt", ".prompts"}
 INLINE_SOURCE_KEY = "__typed_input__"
 INLINE_SOURCE_PATH = "Typed in app"
+DEFAULT_LLM_MODEL = "qwen2.5:7b"
+SPECIALIZED_LIST_FIELDS = {"tags", "actions", "constraints", "deliverables", "structuring_notes"}
+SPECIALIZED_FIELDS = {
+    "role",
+    "goal",
+    "context",
+    "actions",
+    "constraints",
+    "deliverables",
+    "original_text",
+    "structuring_engine",
+    "structuring_model",
+    "structuring_notes",
+}
+RECOGNIZED_FIELDS = {
+    "title",
+    "id",
+    "system",
+    "user",
+    "assistant",
+    "description",
+    "tags",
+    "category",
+    "prompt",
+    "role",
+    "goal",
+    "context",
+    "actions",
+    "constraints",
+    "deliverables",
+    "original_text",
+}
+APP_COLORS = {
+    "bg": "#dbeafe",
+    "panel": "#eff6ff",
+    "panel_alt": "#e0f2fe",
+    "text_bg": "#f8fbff",
+    "text_fg": "#0f172a",
+    "muted_fg": "#334155",
+    "border": "#93c5fd",
+    "button": "#16a34a",
+    "button_hover": "#15803d",
+    "button_pressed": "#166534",
+    "button_text": "#ffffff",
+    "selection": "#60a5fa",
+}
 FIELD_ALIASES = {
     "title": "title",
     "name": "title",
@@ -38,6 +86,17 @@ FIELD_ALIASES = {
     "tags": "tags",
     "category": "category",
     "prompt": "prompt",
+    "role": "role",
+    "goal": "goal",
+    "context": "context",
+    "actions": "actions",
+    "steps": "actions",
+    "constraints": "constraints",
+    "rules": "constraints",
+    "deliverables": "deliverables",
+    "outputs": "deliverables",
+    "original_text": "original_text",
+    "raw_text": "original_text",
 }
 RE_BLOCK_SEPARATOR = re.compile(r"\n\s*---\s*\n", re.MULTILINE)
 RE_FIELD = re.compile(r"^([A-Za-z_ ][A-Za-z0-9_ ]*?)\s*:\s*(.*)$")
@@ -61,10 +120,8 @@ class PromptRecord:
     @property
     def variables(self) -> list[str]:
         found: set[str] = set()
-        for key in ("system", "user", "assistant", "prompt", "description"):
-            value = self.data.get(key)
-            if isinstance(value, str):
-                found.update(RE_VARIABLE.findall(value))
+        for value in self.data.values():
+            found.update(extract_variables_from_value(value))
         return sorted(found)
 
 
@@ -77,6 +134,94 @@ def parse_tags(value: str) -> list[str]:
     return [item.strip() for item in re.split(r"[;,]", value) if item.strip()]
 
 
+def parse_list_field(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        items = value
+    else:
+        items = re.split(r"(?:\r?\n|;)", str(value))
+    parsed: list[str] = []
+    for item in items:
+        cleaned = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", str(item)).strip()
+        if cleaned:
+            parsed.append(cleaned)
+    return parsed
+
+
+def parse_field_value(key: str, value: str) -> Any:
+    if key == "tags":
+        return parse_tags(value)
+    if key in SPECIALIZED_LIST_FIELDS:
+        return parse_list_field(value)
+    return value.strip()
+
+
+def extract_variables_from_value(value: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, str):
+        found.update(RE_VARIABLE.findall(value))
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                found.update(RE_VARIABLE.findall(item))
+    return found
+
+
+def normalize_string_list(value: Any) -> list[str]:
+    return parse_list_field(value)
+
+
+def has_specialized_structure(data: dict[str, Any]) -> bool:
+    return any(data.get(key) for key in SPECIALIZED_FIELDS)
+
+
+def render_list(values: Any, variables: dict[str, Any]) -> list[str]:
+    return [render_template(item, variables) for item in normalize_string_list(values)]
+
+
+def build_specialized_messages(prompt: "PromptRecord", variables: dict[str, Any]) -> list[dict[str, str]]:
+    developer_lines: list[str] = []
+    user_lines: list[str] = []
+
+    role = render_template(str(prompt.data.get("role", "")).strip(), variables)
+    goal = render_template(str(prompt.data.get("goal", "")).strip(), variables)
+    context = render_template(str(prompt.data.get("context", "")).strip(), variables)
+    actions = render_list(prompt.data.get("actions"), variables)
+    constraints = render_list(prompt.data.get("constraints"), variables)
+    deliverables = render_list(prompt.data.get("deliverables"), variables)
+    original_text = render_template(
+        str(prompt.data.get("original_text") or prompt.data.get("prompt", "")).strip(),
+        variables,
+    )
+
+    if role:
+        developer_lines.append(f"Role: {role}")
+    if goal:
+        developer_lines.append(f"Goal: {goal}")
+    if context:
+        developer_lines.append(f"Context: {context}")
+    if constraints:
+        developer_lines.append("Constraints:")
+        developer_lines.extend(f"- {item}" for item in constraints)
+    developer_lines.append("Preserve the user's intent exactly and produce work aligned with this structure.")
+
+    if actions:
+        user_lines.append("Actions:")
+        user_lines.extend(f"- {item}" for item in actions)
+    if deliverables:
+        user_lines.append("Deliverables:")
+        user_lines.extend(f"- {item}" for item in deliverables)
+    if original_text:
+        user_lines.append("Original request:")
+        user_lines.append(original_text)
+
+    return [
+        {"role": "developer", "content": "\n".join(line for line in developer_lines if line).strip()},
+        {"role": "user", "content": "\n".join(line for line in user_lines if line).strip()},
+    ]
+
+
 def render_template(text: str, variables: dict[str, Any]) -> str:
     def repl(match: re.Match[str]) -> str:
         name = match.group(1)
@@ -86,7 +231,7 @@ def render_template(text: str, variables: dict[str, Any]) -> str:
     return RE_VARIABLE.sub(repl, text)
 
 
-def parse_block(block: str, index: int, source_path: str) -> PromptRecord:
+def parse_block(block: str, index: int, source_path: str, model_name: str = DEFAULT_LLM_MODEL) -> PromptRecord:
     lines = block.strip().splitlines()
     data: dict[str, Any] = {}
     current_key: str | None = None
@@ -98,7 +243,7 @@ def parse_block(block: str, index: int, source_path: str) -> PromptRecord:
         if current_key is None:
             return
         value = "\n".join(buffer).strip()
-        data[current_key] = parse_tags(value) if current_key == "tags" else value
+        data[current_key] = parse_field_value(current_key, value)
         current_key = None
         buffer = []
 
@@ -107,17 +252,7 @@ def parse_block(block: str, index: int, source_path: str) -> PromptRecord:
         if match:
             raw_key, raw_value = match.groups()
             key = normalize_key(raw_key)
-            if key in {
-                "title",
-                "id",
-                "system",
-                "user",
-                "assistant",
-                "description",
-                "tags",
-                "category",
-                "prompt",
-            }:
+            if key in RECOGNIZED_FIELDS:
                 flush()
                 current_key = key
                 buffer = [raw_value]
@@ -133,12 +268,15 @@ def parse_block(block: str, index: int, source_path: str) -> PromptRecord:
 
     if not found_structured_fields:
         raw_text = block.strip()
+        structured = structure_plain_prompt(raw_text, model_name)
         data = {
             "id": f"prompt_{index:03d}",
-            "title": f"Prompt {index}",
+            "title": str(structured.get("title") or f"Prompt {index}"),
             "prompt": raw_text,
-            "tags": [],
+            "original_text": raw_text,
+            "tags": normalize_string_list(structured.get("tags")),
         }
+        data.update(structured)
     else:
         data.setdefault("id", f"prompt_{index:03d}")
         data.setdefault("title", f"Prompt {index}")
@@ -147,15 +285,17 @@ def parse_block(block: str, index: int, source_path: str) -> PromptRecord:
     return PromptRecord(source_path=source_path, block_index=index, data=data)
 
 
-def parse_text_to_prompts(text: str, source_path: str) -> list[PromptRecord]:
+def parse_text_to_prompts(text: str, source_path: str, model_name: str = DEFAULT_LLM_MODEL) -> list[PromptRecord]:
     blocks = [b.strip() for b in RE_BLOCK_SEPARATOR.split(text) if b.strip()]
     if not blocks and text.strip():
         blocks = [text.strip()]
-    return [parse_block(block, i + 1, source_path) for i, block in enumerate(blocks)]
+    return [parse_block(block, i + 1, source_path, model_name) for i, block in enumerate(blocks)]
 
 
 def prompt_to_messages(prompt: PromptRecord, variables: dict[str, Any] | None = None) -> list[dict[str, str]]:
     variables = variables or {}
+    if has_specialized_structure(prompt.data):
+        return build_specialized_messages(prompt, variables)
     messages: list[dict[str, str]] = []
     if prompt.data.get("system"):
         content = str(prompt.data["system"])
@@ -176,7 +316,7 @@ def serialize_prompt(
     prompt: PromptRecord,
     export_mode: str,
     variables: dict[str, Any] | None = None,
-    model_name: str = "gpt-5",
+    model_name: str = DEFAULT_LLM_MODEL,
 ) -> dict[str, Any]:
     variables = variables or {}
 
@@ -229,26 +369,57 @@ def validate_prompts(
     for prompt in prompts:
         where = f"{Path(prompt.source_path).name} :: block {prompt.block_index} :: {prompt.id}"
         title = prompt.title.strip()
+        specialized = has_specialized_structure(prompt.data)
         if not title:
             issues.append({"level": "ERROR", "where": where, "message": "Missing title."})
 
-        has_prompt_content = bool(str(prompt.data.get("user", "")).strip() or str(prompt.data.get("prompt", "")).strip())
+        has_prompt_content = bool(
+            str(prompt.data.get("user", "")).strip()
+            or str(prompt.data.get("prompt", "")).strip()
+            or str(prompt.data.get("goal", "")).strip()
+            or normalize_string_list(prompt.data.get("actions"))
+        )
         if not has_prompt_content:
             issues.append({
                 "level": "ERROR",
                 "where": where,
-                "message": "Missing USER or PROMPT content.",
+                "message": "Missing prompt content or specialized goal/actions.",
             })
 
         if id_counts.get(prompt.id, 0) > 1:
             issues.append({"level": "ERROR", "where": where, "message": f"Duplicate id '{prompt.id}'."})
 
-        if not prompt.data.get("system"):
+        if specialized and not str(prompt.data.get("goal", "")).strip():
+            issues.append({"level": "WARN", "where": where, "message": "Structured prompt has no goal."})
+
+        if specialized and not normalize_string_list(prompt.data.get("actions")):
+            issues.append({"level": "WARN", "where": where, "message": "Structured prompt has no actions."})
+
+        if not specialized and not prompt.data.get("system"):
             issues.append({
                 "level": "WARN",
                 "where": where,
                 "message": "No SYSTEM field. This is allowed, but you may want one for instruction quality.",
             })
+
+        structuring_engine = str(prompt.data.get("structuring_engine", "")).strip()
+        if structuring_engine == "heuristic":
+            issues.append({
+                "level": "WARN",
+                "where": where,
+                "message": "AI structuring fallback was used instead of Ollama.",
+            })
+        elif structuring_engine == "ollama":
+            issues.append({
+                "level": "INFO",
+                "where": where,
+                "message": f"Structured with Ollama model '{prompt.data.get('structuring_model', DEFAULT_LLM_MODEL)}'.",
+            })
+
+        for note in normalize_string_list(prompt.data.get("structuring_notes")):
+            lowered = note.lower()
+            level = "WARN" if any(token in lowered for token in ("fallback", "unavailable", "invalid", "repaired")) else "INFO"
+            issues.append({"level": level, "where": where, "message": note})
 
         if export_mode == "API-ready":
             missing = [name for name in prompt.variables if variables.get(name) in (None, "")]
@@ -309,11 +480,68 @@ class PromptTransformerApp:
         self.inline_source_enabled = False
 
         self.export_mode_var = tk.StringVar(value="Dynamic template")
-        self.model_var = tk.StringVar(value="gpt-5")
+        self.model_var = tk.StringVar(value=DEFAULT_LLM_MODEL)
         self.merge_var = tk.BooleanVar(value=True)
 
+        self._apply_theme()
         self._build_ui()
         self._bind_drag_and_drop()
+
+    def _current_model_name(self) -> str:
+        return self.model_var.get().strip() or DEFAULT_LLM_MODEL
+
+    def _apply_theme(self) -> None:
+        self.root.configure(bg=APP_COLORS["bg"])
+        style = ttk.Style(self.root)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+
+        style.configure("TFrame", background=APP_COLORS["bg"])
+        style.configure("TLabel", background=APP_COLORS["bg"], foreground=APP_COLORS["text_fg"])
+        style.configure("TCheckbutton", background=APP_COLORS["bg"], foreground=APP_COLORS["text_fg"])
+        style.map("TCheckbutton", background=[("active", APP_COLORS["bg"])])
+        style.configure("TPanedwindow", background=APP_COLORS["bg"])
+        style.configure(
+            "TButton",
+            background=APP_COLORS["button"],
+            foreground=APP_COLORS["button_text"],
+            padding=6,
+            borderwidth=0,
+            focusthickness=0,
+        )
+        style.map(
+            "TButton",
+            background=[
+                ("active", APP_COLORS["button_hover"]),
+                ("pressed", APP_COLORS["button_pressed"]),
+            ],
+            foreground=[("disabled", "#dcfce7")],
+        )
+        style.configure(
+            "TEntry",
+            fieldbackground=APP_COLORS["text_bg"],
+            foreground=APP_COLORS["text_fg"],
+            insertcolor=APP_COLORS["text_fg"],
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=APP_COLORS["text_bg"],
+            background=APP_COLORS["text_bg"],
+            foreground=APP_COLORS["text_fg"],
+        )
+
+    def _style_scrolled_text(self, widget: ScrolledText) -> None:
+        widget.configure(
+            bg=APP_COLORS["text_bg"],
+            fg=APP_COLORS["text_fg"],
+            insertbackground=APP_COLORS["text_fg"],
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=APP_COLORS["border"],
+            highlightcolor=APP_COLORS["selection"],
+            selectbackground=APP_COLORS["selection"],
+            selectforeground=APP_COLORS["button_text"],
+        )
 
     def _build_ui(self) -> None:
         top = ttk.Frame(self.root, padding=8)
@@ -338,8 +566,8 @@ class PromptTransformerApp:
         self.mode_combo.pack(side="left")
         self.mode_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_preview())
 
-        ttk.Label(top, text="Model:").pack(side="left", padx=(18, 4))
-        self.model_entry = ttk.Entry(top, textvariable=self.model_var, width=12)
+        ttk.Label(top, text="Model (Ollama):").pack(side="left", padx=(18, 4))
+        self.model_entry = ttk.Entry(top, textvariable=self.model_var, width=18)
         self.model_entry.pack(side="left")
 
         ttk.Checkbutton(top, text="Merge all files into one export", variable=self.merge_var).pack(
@@ -349,9 +577,9 @@ class PromptTransformerApp:
         tip = ttk.Label(
             self.root,
             text=(
-                "Supported fields: TITLE, ID, SYSTEM, USER, ASSISTANT, DESCRIPTION, TAGS, CATEGORY, PROMPT. "
-                "Separate prompts with --- . Use Write In App to type directly in the program, then click "
-                "Convert Typed Text. Optional drag-and-drop works with tkinterdnd2."
+                "Supported fields: TITLE, ID, SYSTEM, USER, ASSISTANT, DESCRIPTION, TAGS, CATEGORY, PROMPT, "
+                "ROLE, GOAL, CONTEXT, ACTIONS, CONSTRAINTS, DELIVERABLES. Plain text is auto-structured with "
+                "local Ollama when available, with a built-in fallback when it is not. Separate prompts with --- ."
             ),
             padding=(10, 0, 10, 8),
         )
@@ -368,17 +596,30 @@ class PromptTransformerApp:
         paned.add(right, weight=2)
 
         ttk.Label(left, text="Files / folders converted").pack(anchor="w")
-        self.files_list = tk.Listbox(left, exportselection=False)
+        self.files_list = tk.Listbox(
+            left,
+            exportselection=False,
+            bg=APP_COLORS["text_bg"],
+            fg=APP_COLORS["text_fg"],
+            selectbackground=APP_COLORS["selection"],
+            selectforeground=APP_COLORS["button_text"],
+            highlightthickness=1,
+            highlightbackground=APP_COLORS["border"],
+            highlightcolor=APP_COLORS["selection"],
+            relief="flat",
+        )
         self.files_list.pack(fill="both", expand=True)
         self.files_list.bind("<<ListboxSelect>>", self.on_file_select)
 
         ttk.Label(middle, text="Source text preview / typed input").pack(anchor="w")
         self.source_text = ScrolledText(middle, wrap="word")
         self.source_text.pack(fill="both", expand=True)
+        self._style_scrolled_text(self.source_text)
 
         ttk.Label(right, text="Generated JSON preview").pack(anchor="w")
         self.json_text = ScrolledText(right, wrap="word")
         self.json_text.pack(fill="both", expand=True)
+        self._style_scrolled_text(self.json_text)
 
         bottom = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
         bottom.pack(fill="both", expand=False, padx=8, pady=(0, 8))
@@ -391,6 +632,7 @@ class PromptTransformerApp:
         ttk.Label(variables_frame, text="Variable values (JSON object)").pack(anchor="w")
         self.variables_text = ScrolledText(variables_frame, height=10, wrap="word")
         self.variables_text.pack(fill="both", expand=True)
+        self._style_scrolled_text(self.variables_text)
         self.variables_text.insert(
             "1.0",
             json.dumps(
@@ -407,6 +649,7 @@ class PromptTransformerApp:
         ttk.Label(validation_frame, text="Validation results").pack(anchor="w")
         self.validation_text = ScrolledText(validation_frame, height=10, wrap="word")
         self.validation_text.pack(fill="both", expand=True)
+        self._style_scrolled_text(self.validation_text)
 
     def _bind_drag_and_drop(self) -> None:
         if not DND_AVAILABLE:
@@ -485,7 +728,11 @@ class PromptTransformerApp:
         if not self.inline_source_text.strip():
             self.prompts_by_file[INLINE_SOURCE_KEY] = []
             return
-        self.prompts_by_file[INLINE_SOURCE_KEY] = parse_text_to_prompts(self.inline_source_text, INLINE_SOURCE_PATH)
+        self.prompts_by_file[INLINE_SOURCE_KEY] = parse_text_to_prompts(
+            self.inline_source_text,
+            INLINE_SOURCE_PATH,
+            self._current_model_name(),
+        )
 
     def rebuild_sources_list(self, preferred_key: str | None = None) -> None:
         self.source_keys = list(self.files)
@@ -514,11 +761,9 @@ class PromptTransformerApp:
         self.inline_source_enabled = True
         if not self.inline_source_text.strip():
             self.inline_source_text = (
-                "TITLE: Prompt Title\n"
-                "ID: prompt_001\n"
-                "SYSTEM: You are a helpful assistant.\n"
-                "USER: Write about {{topic}}.\n"
-                "TAGS: example\n"
+                "Describe the changes needed in this project.\n"
+                "Keep the important constraints.\n"
+                "Return a structured prompt definition for another AI."
             )
         self.parse_inline_source()
         self.current_preview_file = INLINE_SOURCE_KEY
@@ -553,7 +798,7 @@ class PromptTransformerApp:
         for path in self.files:
             try:
                 text = load_text_file(path)
-                self.prompts_by_file[path] = parse_text_to_prompts(text, path)
+                self.prompts_by_file[path] = parse_text_to_prompts(text, path, self._current_model_name())
             except Exception as exc:
                 errors.append(f"[ERROR] {path}: {exc}")
 
@@ -627,7 +872,7 @@ class PromptTransformerApp:
         try:
             variables = self.parse_variables_json()
             export_mode = self.export_mode_var.get()
-            model_name = self.model_var.get().strip() or "gpt-5"
+            model_name = self._current_model_name()
             preview = [serialize_prompt(p, export_mode, variables, model_name) for p in prompts]
             payload: dict[str, Any] | list[dict[str, Any]]
             if self.merge_var.get():
@@ -664,7 +909,7 @@ class PromptTransformerApp:
             messagebox.showerror("Fix validation errors first", show)
             return
 
-        model_name = self.model_var.get().strip() or "gpt-5"
+        model_name = self._current_model_name()
         export_mode = self.export_mode_var.get()
 
         if self.merge_var.get():
